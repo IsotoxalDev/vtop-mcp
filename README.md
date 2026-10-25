@@ -96,7 +96,7 @@ nix run .
 ### Registering with an MCP client (e.g. Claude Code)
 
 ```sh
-claude mcp add vtop -- nix run /home/abhi/Dev/college/vtop
+claude mcp add vtop -- nix run /path/to/mcp/folder
 ```
 
 or, if you'd rather point at an already-entered dev shell:
