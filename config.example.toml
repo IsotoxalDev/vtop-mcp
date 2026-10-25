@@ -1,0 +1,10 @@
+# Copy this file to config.toml (which is gitignored) and fill in your details.
+# config.toml is read by vtop_mcp/config.py; every field here can also be set via an
+# env var of the same name in VTOP_<UPPERCASE> form (e.g. VTOP_USERNAME), which wins
+# over this file if both are set.
+
+username = "21BCE1234"
+password = "your-vtop-password"
+
+# Uncomment to point at a different VIT campus's VTOP instance (e.g. Vellore):
+# base_url = "https://vtop.vit.ac.in/vtop"
