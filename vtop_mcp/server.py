@@ -139,11 +139,13 @@ async def vtop_get_exam_schedule(semester_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def vtop_get_academic_calendar() -> dict[str, Any]:
-    """Best-effort fetch of the Academic Calendar: a PDF link if VTOP serves it as a
-    download, plus any tables found on the page."""
+async def vtop_get_academic_calendar(semester_id: str | None = None) -> dict[str, Any]:
+    """Fetch the Academic Calendar for a semester: a day-by-day grid per month (e.g.
+    "NOV-2026") showing working days, holidays, and last-instructional-days. Defaults to
+    the current/most recent semester if semester_id isn't given; get semester_id from
+    vtop_get_semesters for a different one."""
     async with open_page() as page:
-        return await client.get_academic_calendar(page)
+        return await client.get_academic_calendar(page, semester_id)
 
 
 @mcp.tool()

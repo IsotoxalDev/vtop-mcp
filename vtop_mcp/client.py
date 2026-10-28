@@ -1,4 +1,5 @@
 import asyncio
+import re
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -29,6 +30,11 @@ async def goto_login_form(page: Page) -> None:
 
 
 async def is_logged_in(page: Page) -> bool:
+    """Authoritative check: always (re)navigates to /content, so it reflects the real,
+    current server-side session state. Used by vtop_status, whose whole job is to report
+    that accurately. For the repeated "are we still logged in" guard that every data tool
+    runs before its own request, see ensure_home below -- that one deliberately trades a
+    little staleness for not re-navigating on every single call."""
     try:
         await page.goto(CONTENT_URL, wait_until="domcontentloaded")
     except Exception:
@@ -169,6 +175,20 @@ async def wait_for_manual_login(
 
 
 async def ensure_home(page: Page) -> None:
+    """Cheap guard run before every data-fetching call. The shared page/context (see
+    browser.py) persists across tool calls, so if the current DOM already has
+    #authorizedIDX (the authenticated shell's marker, present on every VTOP page reached
+    via its internal AJAX nav, not just /content) we're still on an authenticated page
+    from a previous call and skip the full page.goto round trip that is_logged_in does.
+    This can go stale if the server-side session expired without the DOM changing, but
+    vtop_post() independently detects that case ("not authorized" in its AJAX response)
+    and raises telling the caller to log in again -- so this is just a fast path to a
+    nicer error message up front, not the actual security boundary."""
+    try:
+        if await page.locator("#authorizedIDX").count() > 0:
+            return
+    except Exception:
+        pass
     if not await is_logged_in(page):
         raise NotLoggedInError("Not logged in to VTOP (or the session expired). Call vtop_login first.")
 
@@ -298,9 +318,7 @@ async def open_menu_item(page: Page, link_text: str, timeout_ms: int = 15_000) -
         pass
 
 
-async def scrape_tables(page: Page) -> list[list[list[str]]]:
-    html = await page.content()
-    soup = BeautifulSoup(html, "html.parser")
+def _scrape_tables_from_soup(soup: BeautifulSoup) -> list[list[list[str]]]:
     tables = []
     for table in soup.find_all("table"):
         rows = []
@@ -311,6 +329,11 @@ async def scrape_tables(page: Page) -> list[list[list[str]]]:
         if rows:
             tables.append(rows)
     return tables
+
+
+async def scrape_tables(page: Page) -> list[list[list[str]]]:
+    html = await page.content()
+    return _scrape_tables_from_soup(BeautifulSoup(html, "html.parser"))
 
 
 async def get_form_fields(page: Page) -> list[dict[str, Any]]:
@@ -384,20 +407,43 @@ async def submit_form(page: Page, timeout_ms: int = 15_000) -> None:
         pass
 
 
-async def get_academic_calendar(page: Page) -> dict[str, Any]:
-    """Best-effort: open the Academic Calendar menu item and report whatever is on it
-    (a PDF link and/or any tables), since VTOP usually serves this as a downloadable PDF."""
-    await open_menu_item(page, "academic calendar")
-    html = await page.content()
-    soup = BeautifulSoup(html, "html.parser")
+async def get_academic_calendar(page: Page, semester_id: str | None = None) -> dict[str, Any]:
+    """Fetch the Academic Calendar for a semester (current semester if semester_id isn't
+    given) directly via VTOP's own AJAX endpoints -- same pattern as vtop_post's other
+    callers -- rather than through the sidebar menu's UI (that menu lives behind a
+    Bootstrap dropdown flyout that proved unreliable to drive via a scripted click).
 
-    pdf_link = None
-    iframe = soup.find("iframe")
-    if iframe and iframe.get("src"):
-        pdf_link = iframe["src"]
-    if not pdf_link:
-        a = soup.find("a", href=lambda h: bool(h) and ".pdf" in h.lower())
-        if a:
-            pdf_link = a["href"]
+    VTOP serves this as a day-by-day calendar, one month at a time: picking a semester
+    returns a row of month buttons, and each one is a separate AJAX call returning that
+    month's day grid (date -> working day / holiday / LID, etc.)."""
+    await ensure_home(page)
+    if semester_id is None:
+        semesters = await get_semesters(page)
+        if not semesters:
+            raise VtopError("Could not determine the current semester for the academic calendar.")
+        semester_id = semesters[0]["id"]
 
-    return {"pdf_url": pdf_link, "tables": await scrape_tables(page)}
+    months_html = await vtop_post(
+        page,
+        "getDateForSemesterPreview",
+        {"semSubId": semester_id, "paramReturnId": "getDateForSemesterPreview"},
+    )
+    months_soup = BeautifulSoup(months_html, "html.parser")
+
+    month_dates = []
+    for a in months_soup.find_all("a", onclick=True):
+        m = re.search(r"processViewCalendar\('([^']+)'\)", a["onclick"])
+        if m:
+            month_dates.append(m.group(1))
+
+    months: dict[str, list[list[str]]] = {}
+    for cal_date in month_dates:
+        month_html = await vtop_post(
+            page,
+            "processViewCalendar",
+            {"calDate": cal_date, "semSubId": semester_id, "classGroupId": "COMB"},
+        )
+        label = cal_date[3:]  # "01-NOV-2026" -> "NOV-2026"
+        months[label] = _scrape_tables_from_soup(BeautifulSoup(month_html, "html.parser"))
+
+    return {"semester_id": semester_id, "months": months}
